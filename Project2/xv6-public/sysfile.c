@@ -151,19 +151,7 @@ sys_link(void)
   iunlockput(dp);
   iput(ip);
 
-    if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
-    if(f)
-      fileclose(f);
-    iunlockput(ip);
-    end_op();
-    return -1;
-  }
-  iunlock(ip);
   end_op();
-
-  f->type = FD_INODE;
-  f->ip = ip;
-  f->off = 0;
 
   return 0;
 
@@ -429,6 +417,17 @@ sys_exec(void)
       return -1;
   }
   return exec(path, argv);
+}
+
+int
+sys_exec2(void)
+{
+	char *path, **argv;
+	int stacksize;
+	if(argstr(0,&path)<0 || argstr(1,&argv)<0 || argint(2,&stacksize)<0)
+		return -1;
+
+  return exec2(path, argv, stacksize);
 }
 
 int

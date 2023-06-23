@@ -18,6 +18,7 @@
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
+int sync(void);
 static int
 argfd(int n, int *pfd, struct file **pf)
 {
@@ -151,19 +152,7 @@ sys_link(void)
   iunlockput(dp);
   iput(ip);
 
-    if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
-    if(f)
-      fileclose(f);
-    iunlockput(ip);
-    end_op();
-    return -1;
-  }
-  iunlock(ip);
   end_op();
-
-  f->type = FD_INODE;
-  f->ip = ip;
-  f->off = 0;
 
   return 0;
 
@@ -172,80 +161,6 @@ bad:
   ip->nlink--;
   iupdate(ip);
   iunlockput(ip);
-  end_op();
-  return -1;
-}
-
-// Is the directory dp empty except for "." and ".." ?
-static int
-isdirempty(struct inode *dp)
-{
-  int off;
-  struct dirent de;
-
-  for(off=2*sizeof(de); off<dp->size; off+=sizeof(de)){
-    if(readi(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
-      panic("isdirempty: readi");
-    if(de.inum != 0)
-      return 0;
-  }
-  return 1;
-}
-
-//PAGEBREAK!
-int
-sys_unlink(void)
-{
-  struct inode *ip, *dp;
-  struct dirent de;
-  char name[DIRSIZ], *path;
-  uint off;
-
-  if(argstr(0, &path) < 0)
-    return -1;
-
-  begin_op();
-  if((dp = nameiparent(path, name)) == 0){
-    end_op();
-    return -1;
-  }
-
-  ilock(dp);
-
-  // Cannot unlink "." or "..".
-  if(namecmp(name, ".") == 0 || namecmp(name, "..") == 0)
-    goto bad;
-
-  if((ip = dirlookup(dp, name, &off)) == 0)
-    goto bad;
-  ilock(ip);
-
-  if(ip->nlink < 1)
-    panic("unlink: nlink < 1");
-  if(ip->type == T_DIR && !isdirempty(ip)){
-    iunlockput(ip);
-    goto bad;
-  }
-
-  memset(&de, 0, sizeof(de));
-  if(writei(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
-    panic("unlink: writei");
-  if(ip->type == T_DIR){
-    dp->nlink--;
-    iupdate(dp);
-  }
-  iunlockput(dp);
-
-  ip->nlink--;
-  iupdate(ip);
-  iunlockput(ip);
-
-  end_op();
-
-  return 0;
-
-bad:
-  iunlockput(dp);
   end_op();
   return -1;
 }
@@ -294,6 +209,136 @@ create(char *path, short type, short major, short minor)
   return ip;
 }
 
+// symbolic system call
+int
+sys_symlink(void)
+{
+  char *old, *new;
+  char name[DIRSIZ];
+  struct inode *temp, *dp;
+  int fd, omode;
+  struct file *f;
+  
+  if(argstr(0, &old) < 0 || argstr(1, &new) < 0){
+    return -1;
+  }
+  cprintf("creating a sym link. old : %s new : %s\n", old, new);
+
+  begin_op();
+
+  //link 할 파일이 존재하는지 확인
+  if((temp = namei(old)) == 0){
+    cprintf("Not exist old file!\n");
+    end_op();
+    return -1;
+  } 
+
+  //새로운 파일의 이름과 겹치는 것이 있는지 확인
+  if((temp = namei(new)) != 0){
+    cprintf("Already exist new file!\n");
+    end_op();
+    return -1;
+  }
+
+  //ip 할당
+  struct inode *ip = create(new, T_FILE, 0, 0);
+  if(ip == 0){
+    end_op();
+    return -1;
+  }
+  
+  //새로 만든 ip의 data block에 데이터를 써준다.
+  int len = strlen(old);
+  char len_arr[sizeof(int)];
+  memcpy(len_arr, &len, sizeof(int));
+  writei(ip, len_arr, 0, sizeof(int));
+  writei(ip, old, sizeof(int), len+1);
+  ip->type = T_SYMLINK;
+
+  iupdate(ip);
+  iunlock(ip);
+  end_op();
+  return 0;
+}
+
+
+// Is the directory dp empty except for "." and ".." ?
+static int
+isdirempty(struct inode *dp)
+{
+  int off;
+  struct dirent de;
+
+  for(off=2*sizeof(de); off<dp->size; off+=sizeof(de)){
+    if(readi(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
+      panic("isdirempty: readi");
+    if(de.inum != 0)
+      return 0;
+  }
+  return 1;
+}
+
+//PAGEBREAK!
+int
+sys_unlink(void)
+{
+  struct inode *ip, *dp;
+  struct dirent de;
+  char name[DIRSIZ], *path;
+  uint off;
+
+  if(argstr(0, &path) < 0)
+  {
+    return -1;
+  }
+
+  begin_op();
+  if((dp = nameiparent(path, name)) == 0){
+    end_op();
+    return -1;
+  }
+
+  ilock(dp);
+
+  // Cannot unlink "." or "..".
+  if(namecmp(name, ".") == 0 || namecmp(name, "..") == 0)
+    goto bad;
+
+  if((ip = dirlookup(dp, name, &off)) == 0)
+    goto bad;
+  ilock(ip);
+
+  if(ip->nlink < 1)
+    panic("unlink: nlink < 1");
+  if(ip->type == T_DIR && !isdirempty(ip)){
+    iunlockput(ip);
+    goto bad;
+  }
+
+  memset(&de, 0, sizeof(de));
+  if(writei(dp, (char*)&de, off, sizeof(de)) != sizeof(de))
+    panic("unlink: writei");
+  if(ip->type == T_DIR){
+    dp->nlink--;
+    iupdate(dp);
+  }
+  iunlockput(dp);
+
+  ip->nlink--;
+  iupdate(ip);
+  iunlockput(ip);
+
+  end_op();
+
+  return 0;
+
+bad:
+  iunlockput(dp);
+  end_op();
+  return -1;
+}
+
+
 int
 sys_open(void)
 {
@@ -306,7 +351,6 @@ sys_open(void)
     return -1;
 
   begin_op();
-
   if(omode & O_CREATE){
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
@@ -335,7 +379,7 @@ sys_open(void)
   }
   iunlock(ip);
   end_op();
-
+  
   f->type = FD_INODE;
   f->ip = ip;
   f->off = 0;
@@ -343,6 +387,7 @@ sys_open(void)
   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
   return fd;
 }
+
 
 int
 sys_mkdir(void)
@@ -409,24 +454,46 @@ int
 sys_exec(void)
 {
   char *path, *argv[MAXARG];
+  char *path3;
   int i;
   uint uargv, uarg;
+  struct inode *ip;
 
   if(argstr(0, &path) < 0 || argint(1, (int*)&uargv) < 0){
     return -1;
   }
+  
+  //실행의 주체를 변경
+  // ip = namei(path);
+  // if(ip->type == 4){
+  //   begin_op();
+  //   ilock(ip);
+  //   ip->type = 2;
+  //   char len_arr[5];
+  //   readi(ip, len_arr, 0, sizeof(int));
+  //   int t;
+  //   memcpy(&t, len_arr, sizeof(int));
+  //   readi(ip, &path3, sizeof(int), t+1);
+  //   ip->type = 4;
+  //   path = &path3;
+  //   iunlock(ip);
+  //   end_op();
+  // }
   memset(argv, 0, sizeof(argv));
   for(i=0;; i++){
-    if(i >= NELEM(argv))
+    if(i >= NELEM(argv)){
       return -1;
-    if(fetchint(uargv+4*i, (int*)&uarg) < 0)
+    }
+    if(fetchint(uargv+4*i, (int*)&uarg) < 0){
       return -1;
+    }
     if(uarg == 0){
       argv[i] = 0;
       break;
     }
-    if(fetchstr(uarg, &argv[i]) < 0)
+    if(fetchstr(uarg, &argv[i]) < 0){
       return -1;
+    }
   }
   return exec(path, argv);
 }
@@ -453,4 +520,11 @@ sys_pipe(void)
   fd[0] = fd0;
   fd[1] = fd1;
   return 0;
+}
+
+int 
+sys_sync(void)
+{
+  int temp = sync();
+  return temp;
 }
